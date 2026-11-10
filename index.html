@@ -17,7 +17,7 @@ pre{background:var(--cd);border:1px solid var(--bd);border-radius:8px;padding:10
 .b{display:inline-block;padding:2px 10px;border-radius:99px;border:1px solid currentColor;font-weight:700}.ok{color:var(--ok)}.er{color:var(--er)}
 a{color:var(--ac)}#res>*{margin:.5em 0}
 </style></head><body>
-<h1>Dekiller Coder <small class="mu">v0.7</small></h1>
+<h1>Dekiller Coder <small class="mu">v0.8</small></h1>
 <p class="mu">La IA y las pruebas corren en la nube. Tu teléfono solo envía y recibe. Tus archivos originales no se tocan: todo ocurre en una rama nueva.</p>
 <details id="cfg"><summary>Claves (se guardan solo en este navegador)</summary>
 <label>Token de GitHub (fine-grained, solo tus repos)</label><input id="k_gh" type="password" autocomplete="off">
@@ -106,6 +106,12 @@ jobs:
               const ref = (m[2] ?? m[3]).trim();
               if (!ref || /^(https?:|\/\/|mailto:|tel:|data:|javascript:|blob:|#)/i.test(ref) || ref.includes('{{') || ref.includes('${')) continue;
               if (!exists(f, ref)) err(f, lineOf(s, m.index), m[1] + '="' + ref + '" apunta a un archivo que no existe');
+            }
+
+            const idset = new Set([...s.matchAll(/\s(?:id|name)\s*=\s*["']([^"']+)["']/gi)].map(m => m[1]));
+            for (const m of s.matchAll(/<a\b[^>]*?\shref\s*=\s*(?:"#([^"]+)"|'#([^']+)')/gi)) {
+              const id = m[1] ?? m[2];
+              if (id !== 'top' && !idset.has(id)) err(f, lineOf(s, m.index), 'enlace a #' + id + ' sin destino (no existe id="' + id + '")');
             }
 
             const ids = {};
@@ -402,7 +408,7 @@ async function run(){
     let p;const changes=[];
     try{
       p=parseFiles(t);
-      if(p.files.length+p.edits.length>10)throw new Error('demasiados archivos');
+      if(p.files.length+new Set(p.edits.map(e=>e.path)).size>10)throw new Error('demasiados archivos');
       for(const f of p.files){
         if(!okPath(f.path))throw new Error('ruta no permitida: '+f.path);
         if(f.content.length>60000)throw new Error('archivo demasiado grande: '+f.path);
@@ -410,15 +416,17 @@ async function run(){
         if(old!==null&&(!seenFull.has(f.path)||f.content.length<old.length*.5))throw new Error(f.path+' ya existe: modifícalo con @@@EDITAR en vez de reescribirlo entero');
         changes.push({path:f.path,content:f.content});
       }
-      for(const e of p.edits){
-        if(!okPath(e.path))throw new Error('ruta no permitida: '+e.path);
-        const old=await getFull(e.path);
-        if(old===null)throw new Error(e.path+' no existe; para crearlo usa @@@ARCHIVO');
-        let content;try{content=applyEdits(old,e.blocks)}catch(x){throw new Error(e.path+': '+x.message)}
-        if(content.length>60000)throw new Error('archivo demasiado grande: '+e.path);
-        changes.push({path:e.path,content});
+      const byPath=new Map();
+      for(const e of p.edits)byPath.set(e.path,[...(byPath.get(e.path)||[]),...e.blocks]);
+      for(const[path,blocks]of byPath){
+        if(!okPath(path))throw new Error('ruta no permitida: '+path);
+        const old=await getFull(path);
+        if(old===null)throw new Error(path+' no existe; para crearlo usa @@@ARCHIVO');
+        let content;try{content=applyEdits(old,blocks)}catch(x){throw new Error(path+': '+x.message)}
+        if(content.length>60000)throw new Error('archivo demasiado grande: '+path);
+        changes.push({path,content});
       }
-      if(new Set(changes.map(c=>c.path)).size!==changes.length)throw new Error('archivo repetido en la respuesta');
+      if(new Set(changes.map(c=>c.path)).size!==changes.length)throw new Error('el mismo archivo aparece como @@@ARCHIVO y como @@@EDITAR, o repetido como @@@ARCHIVO');
     }
     catch(e){log('Respuesta rechazada: '+e.message+' · la IA dijo: '+t.slice(0,200).replace(/\s+/g,' '));if(e.message==='sin archivos'&&(/^\s*RESUMEN:/i.test(t)||++nofile>=2)){out.textContent+='\nRespuesta de la IA (sin cambios de código):\n'+t.slice(0,4000)+'\n';status='nochange';break}msgs.push({role:'user',content:'Respuesta rechazada: '+e.message+'. Usa el formato exacto; en BUSCAR copia el texto actual del archivo.'});continue}
     const files=changes.slice();if(first)files.push({path:'.github/workflows/ai-test.yml',content:WF});
