@@ -17,7 +17,7 @@ pre{background:var(--cd);border:1px solid var(--bd);border-radius:8px;padding:10
 .b{display:inline-block;padding:2px 10px;border-radius:99px;border:1px solid currentColor;font-weight:700}.ok{color:var(--ok)}.er{color:var(--er)}
 a{color:var(--ac)}#res>*{margin:.5em 0}
 </style></head><body>
-<h1>Dekiller Coder <small class="mu">v0.8</small></h1>
+<h1>Dekiller Coder <small class="mu">v0.9</small></h1>
 <p class="mu">La IA y las pruebas corren en la nube. Tu teléfono solo envía y recibe. Tus archivos originales no se tocan: todo ocurre en una rama nueva.</p>
 <details id="cfg"><summary>Claves (se guardan solo en este navegador)</summary>
 <label>Token de GitHub (fine-grained, solo tus repos)</label><input id="k_gh" type="password" autocomplete="off">
@@ -192,6 +192,7 @@ jobs:
 const $=id=>document.getElementById(id),sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const F=['gh','or','groq','gem','ven','ds','cu_url','cu_model','cu_key','repo','base','m_groq','m_gemini','m_openrouter','m_venice','m_deepseek'];
 let S={};try{S=JSON.parse(localStorage.getItem('dk')||'{}')}catch{}
+if(S.v!=='0.9'){for(const k of Object.keys(S))if(k.startsWith('auto_'))delete S[k];S.v='0.9';try{localStorage.setItem('dk',JSON.stringify(S))}catch{}}
 for(const k of F)if(S[k])$('k_'+k).value=S[k];$('k_paid').checked=!!S.paid;
 const WF=$('wf').textContent.replace(/^\n/,'');
 const out=$('out');let cancel=false,R='',busy=false;
@@ -236,7 +237,7 @@ async function llm(messages,max=3000){
     if(!isOn(n,p))continue;
     const base=baseOf(n);
     if(!/^https:\/\//.test(base)){errs.push(n+': la dirección debe empezar por https://');continue}
-    const q=[n==='custom'?S.cu_model:(S['m_'+n]||S['auto_'+n]||p.m)],tried=new Set();let disc=false;
+    const q=[n==='custom'?S.cu_model:(S['m_'+n]||S['auto_'+n]||p.m)],tried=new Set();let disc=false;let gone=false;
     while(q.length&&tried.size<4){
       const model=q.shift();if(tried.has(model))continue;tried.add(model);
       for(let r=0;r<2;r++){
@@ -246,10 +247,11 @@ async function llm(messages,max=3000){
           if(!res.ok){const e=new Error('HTTP '+res.status+' '+String((Array.isArray(d)?d[0]:d)?.error?.message||'').slice(0,120));e.st=res.status;throw e}
           const x=(d.choices?.[0]?.message?.content||'').replace(/<think>[\s\S]*?<\/think>/g,'').trim();
           if(!x)throw new Error('respuesta vacía');
-          if(n!=='custom'&&!S['m_'+n]&&S['auto_'+n]!==model&&model!==p.m){S['auto_'+n]=model;try{localStorage.setItem('dk',JSON.stringify(S))}catch{}}
+          if(gone&&n!=='custom'&&!S['m_'+n]&&S['auto_'+n]!==model&&model!==p.m){S['auto_'+n]=model;try{localStorage.setItem('dk',JSON.stringify(S))}catch{}}
           log(`IA usada: ${n} (${model})`);return x;
         }catch(e){
           if(r===0&&RETRY.includes(e.st)){log(`${n}: ${e.st}, reintento en 6 s`);await sleep(6000);continue}
+          if(e.st===404||e.st===400)gone=true;
           errs.push(`${n}/${model}: ${e.message}${e.st?'':' (red o CORS: quizá el proveedor no permite llamadas desde el navegador)'}`);
           if(!S['m_'+n]&&n!=='openrouter'&&n!=='custom'&&!disc&&[400,404,413,429,500,502,503,504].includes(e.st)){
             disc=true;try{q.push(...await pickModels(n))}catch{}
