@@ -17,7 +17,7 @@ pre{background:var(--cd);border:1px solid var(--bd);border-radius:8px;padding:10
 .b{display:inline-block;padding:2px 10px;border-radius:99px;border:1px solid currentColor;font-weight:700}.ok{color:var(--ok)}.er{color:var(--er)}
 a{color:var(--ac)}#res>*{margin:.5em 0}
 </style></head><body>
-<h1>Dekiller Coder <small class="mu">v0.13</small></h1>
+<h1>Dekiller Coder <small class="mu">v0.14</small></h1>
 <p class="mu">La IA y las pruebas corren en la nube. Tu teléfono solo envía y recibe. Tus archivos originales no se tocan: todo ocurre en una rama nueva.</p>
 <details id="cfg"><summary>Claves (se guardan solo en este navegador)</summary>
 <label>Token de GitHub (fine-grained, solo tus repos)</label><input id="k_gh" type="password" autocomplete="off">
@@ -36,6 +36,9 @@ a{color:var(--ac)}#res>*{margin:.5em 0}
 <label class="row"><input type="checkbox" id="k_ro">Solo revisar (no cambia nada)</label>
 <label class="row"><input type="checkbox" id="k_big">Archivos enteros (contexto grande; usa Gemini)</label>
 <button id="go">Ejecutar</button><button id="stop" class="sec" disabled>Cancelar</button>
+<details id="upd"><summary>Subir un proyecto (ZIP) a un repositorio nuevo</summary>
+<p class="mu">Usa el campo "Repositorio" de arriba como destino. Debe ser un repositorio <b>nuevo</b> creado con "Add a README" y añadido a tu token. No sube .env, claves ni carpetas pesadas, y se detiene si encuentra algo que parezca un secreto.</p>
+<input id="k_zip" type="file" accept=".zip"><button id="up">Subir ZIP</button></details>
 <pre id="out"></pre><div id="res"></div>
 
 <script type="text/plain" id="wf">
@@ -457,6 +460,91 @@ async function run(){
   }
   log('Estado final: '+status);show(status,info.created?info:null);
 }
+
+// ---------- Importador de ZIP (sin dependencias) ----------
+async function inflateRaw(u){return new Uint8Array(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer())}
+async function readZip(buf){
+  const u8=new Uint8Array(buf),dv=new DataView(buf);let e=-1;
+  for(let i=u8.length-22;i>=Math.max(0,u8.length-65557);i--)if(dv.getUint32(i,true)===0x06054b50){e=i;break}
+  if(e<0)throw new Error('No parece un ZIP válido');
+  const n=dv.getUint16(e+10,true);let p=dv.getUint32(e+16,true);const out=[];
+  for(let k=0;k<n;k++){
+    if(dv.getUint32(p,true)!==0x02014b50)throw new Error('ZIP dañado');
+    const flag=dv.getUint16(p+8,true),method=dv.getUint16(p+10,true),cs=dv.getUint32(p+20,true),us=dv.getUint32(p+24,true);
+    const nl=dv.getUint16(p+28,true),el=dv.getUint16(p+30,true),cl=dv.getUint16(p+32,true),off=dv.getUint32(p+42,true);
+    const name=new TextDecoder().decode(u8.subarray(p+46,p+46+nl));p+=46+nl+el+cl;
+    if(name.endsWith('/'))continue;
+    if(flag&1)throw new Error('ZIP con contraseña: no soportado');
+    if(us>5*1024*1024){out.push({name,skip:'más de 5 MB'});continue}
+    const st=off+30+dv.getUint16(off+26,true)+dv.getUint16(off+28,true),raw=u8.subarray(st,st+cs);
+    const data=method===0?raw:method===8?await inflateRaw(raw):null;
+    out.push(data?{name,data}:{name,skip:'compresión no soportada'});
+  }
+  return out;
+}
+function skipWhy(n){
+  const b=n.split('/').pop();
+  if(n.includes('..')||n.startsWith('/')||n.includes('\\'))return 'ruta no permitida';
+  if(/(^|\/)(\.git|\.github|node_modules|__pycache__|\.venv|venv|\.idea|\.vscode)\//.test(n))return 'carpeta excluida';
+  if(/^\.env/i.test(b)&&b!=='.env.example')return 'posible secreto (.env)';
+  if(/\.(pem|key|p12|pfx|pyc)$/i.test(b)||b==='.DS_Store')return 'archivo excluido';
+  return '';
+}
+function prepZip(entries){
+  const top=entries[0]?.name.split('/')[0],strip=!!top&&entries.every(e=>e.name.startsWith(top+'/'));
+  const keep=[],skipped=[];
+  for(const e of entries){
+    const n=strip?e.name.slice(top.length+1):e.name;if(!n)continue;
+    const why=e.skip||skipWhy(n);
+    why?skipped.push(n+' ('+why+')'):keep.push({path:n,data:e.data});
+  }
+  return{keep,skipped};
+}
+const SECRET=/(sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|gsk_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|\b\d{8,10}:[A-Za-z0-9_-]{35}\b|xox[bp]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/g;
+const FAKE=/test|example|ejemplo|abcdef|1234567890|xxxx|your|fake|dummy|placeholder|changeme|\.\.\./i;
+function findSecrets(keep){
+  const bad=[];
+  for(const f of keep){
+    if(f.data.length>1e6)continue;
+    for(const m of new TextDecoder().decode(f.data).matchAll(SECRET))if(!FAKE.test(m[0])){bad.push(f.path+' ('+m[0].slice(0,6)+'…)');break}
+  }
+  return bad;
+}
+const b64=u=>{let s='';for(let i=0;i<u.length;i+=32768)s+=String.fromCharCode.apply(null,u.subarray(i,i+32768));return btoa(s)};
+async function importZip(file){
+  save();R=S.repo||'';
+  if(!S.gh||!/^[\w.-]+\/[\w.-]+$/.test(R))return log('Falta el token o el repositorio destino (usuario/nombre).');
+  const repo=await api(`/repos/${R}`),br=repo.default_branch;
+  let b;try{b=await api(`/repos/${R}/branches/${encodeURIComponent(br)}`)}catch{throw new Error('El repositorio está vacío: créalo marcando "Add a README".')}
+  const tr=await api(`/repos/${R}/git/trees/${b.commit.commit.tree.sha}?recursive=1`);
+  const extra=tr.tree.find(x=>x.type==='blob'&&!/^(README(\.md)?|LICENSE(\.md)?|\.gitignore)$/i.test(x.path));
+  if(extra)throw new Error('El repositorio ya tiene archivos ('+extra.path+'). Por seguridad solo subo a repositorios nuevos.');
+  log('Leyendo el ZIP…');
+  const{keep,skipped}=prepZip(await readZip(await file.arrayBuffer()));
+  if(skipped.length)log('Omitidos ('+skipped.length+'): '+skipped.slice(0,12).join('; ')+(skipped.length>12?' …':''));
+  if(!keep.length)throw new Error('El ZIP no tiene archivos utilizables.');
+  if(keep.length>500||keep.reduce((a,f)=>a+f.data.length,0)>50e6)throw new Error('Proyecto demasiado grande (máx. 500 archivos y 50 MB).');
+  const bad=findSecrets(keep);
+  if(bad.length)throw new Error('Posibles claves o secretos en: '+bad.join(', ')+'. No se subió nada. Quítalos del ZIP y repite.');
+  log(`Subiendo ${keep.length} archivos a ${R}…`);
+  const tree=[];
+  for(let i=0;i<keep.length;i+=4){
+    await Promise.all(keep.slice(i,i+4).map(async f=>{
+      const bl=await api(`/repos/${R}/git/blobs`,{method:'POST',body:{content:b64(f.data),encoding:'base64'}});
+      tree.push({path:f.path,mode:'100644',type:'blob',sha:bl.sha});
+    }));
+    const d=Math.min(keep.length,i+4);if(d%20===0||d===keep.length)log(`  ${d}/${keep.length}`);
+  }
+  const t=await api(`/repos/${R}/git/trees`,{method:'POST',body:{base_tree:b.commit.commit.tree.sha,tree}});
+  const c=await api(`/repos/${R}/git/commits`,{method:'POST',body:{message:'Importar proyecto desde ZIP (Dekiller Coder)',tree:t.sha,parents:[b.commit.sha]}});
+  await api(`/repos/${R}/git/refs/heads/${br}`,{method:'PATCH',body:{sha:c.sha}});
+  log('Listo: https://github.com/'+R+' · ya puedes usarlo con "Solo revisar".');
+}
+$('up').onclick=async()=>{
+  const f=$('k_zip').files[0];if(busy)return;if(!f)return log('Elige primero un archivo ZIP.');
+  busy=true;out.textContent='';
+  try{await importZip(f)}catch(e){log('Error: '+e.message)}finally{busy=false}
+};
 $('save').onclick=()=>{save();$('cfg').open=false;log('Guardado')};
 $('wipe').onclick=()=>{try{localStorage.removeItem('dk')}catch{}for(const k of F)$('k_'+k).value='';S={};log('Claves borradas')};
 $('stop').onclick=()=>{cancel=true;log('Cancelando al terminar el paso actual…')};
