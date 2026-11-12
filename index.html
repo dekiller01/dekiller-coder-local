@@ -17,7 +17,7 @@ pre{background:var(--cd);border:1px solid var(--bd);border-radius:8px;padding:10
 .b{display:inline-block;padding:2px 10px;border-radius:99px;border:1px solid currentColor;font-weight:700}.ok{color:var(--ok)}.er{color:var(--er)}
 a{color:var(--ac)}#res>*{margin:.5em 0}
 </style></head><body>
-<h1>Dekiller Coder <small class="mu">v0.14</small></h1>
+<h1>Dekiller Coder <small class="mu">v0.15</small></h1>
 <p class="mu">La IA y las pruebas corren en la nube. Tu teléfono solo envía y recibe. Tus archivos originales no se tocan: todo ocurre en una rama nueva.</p>
 <details id="cfg"><summary>Claves (se guardan solo en este navegador)</summary>
 <label>Token de GitHub (fine-grained, solo tus repos)</label><input id="k_gh" type="password" autocomplete="off">
@@ -236,10 +236,10 @@ async function pickModels(n){
   return [...new Set(out)];
 }
 let big=false,lastCut=false,lastPartial=false;
-const orderFor=()=>{const e=Object.entries(P);return big?e.filter(([n])=>!['groq','openrouter'].includes(n)).sort((a,b)=>(b[0]==='gemini')-(a[0]==='gemini')):e};
+const orderFor=sz=>{const e=Object.entries(P);if(!big)return e;const g=e.sort((a,b)=>(b[0]==='gemini')-(a[0]==='gemini'));return sz>20000?g.filter(([n])=>!['groq','openrouter'].includes(n)):g};
 async function llm(messages,max=3000){
-  const errs=[],RETRY=[429,500,502,503,504];
-  for(const[n,p]of orderFor()){
+  const errs=[],RETRY=[429,500,502,503,504],size=messages.reduce((a,m)=>a+m.content.length,0);
+  for(const[n,p]of orderFor(size)){
     if(!isOn(n,p))continue;
     const base=baseOf(n);
     if(!/^https:\/\//.test(base)){errs.push(n+': la dirección debe empezar por https://');continue}
@@ -257,7 +257,7 @@ async function llm(messages,max=3000){
           if(gone&&n!=='custom'&&!S['m_'+n]&&S['auto_'+n]!==model&&model!==p.m){S['auto_'+n]=model;try{localStorage.setItem('dk',JSON.stringify(S))}catch{}}
           log(`IA usada: ${n} (${model})`);return x;
         }catch(e){
-          if(r===0&&RETRY.includes(e.st)){log(`${n}: ${e.st}, reintento en 6 s`);await sleep(6000);continue}
+          if(r===0&&(RETRY.includes(e.st)||(!e.st&&e.name==='TypeError'))){log(`${n}: ${e.st||'fallo de red'}, reintento en 6 s`);await sleep(6000);continue}
           if(e.st===404||e.st===400)gone=true;
           errs.push(`${n}/${model}: ${e.message}${e.st?'':' (red o CORS: quizá el proveedor no permite llamadas desde el navegador)'}`);
           if(!S['m_'+n]&&n!=='openrouter'&&n!=='custom'&&!disc&&[400,404,413,429,500,502,503,504].includes(e.st)){
