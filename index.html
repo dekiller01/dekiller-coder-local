@@ -17,7 +17,7 @@ pre{background:var(--cd);border:1px solid var(--bd);border-radius:8px;padding:10
 .b{display:inline-block;padding:2px 10px;border-radius:99px;border:1px solid currentColor;font-weight:700}.ok{color:var(--ok)}.er{color:var(--er)}
 a{color:var(--ac)}#res>*{margin:.5em 0}
 </style></head><body>
-<h1>Dekiller Coder <small class="mu">v0.16</small></h1>
+<h1>Dekiller Coder <small class="mu">v0.17</small></h1>
 <p class="mu">La IA y las pruebas corren en la nube. Tu teléfono solo envía y recibe. Tus archivos originales no se tocan: todo ocurre en una rama nueva.</p>
 <details id="cfg"><summary>Claves (se guardan solo en este navegador)</summary>
 <label>Token de GitHub (fine-grained, solo tus repos)</label><input id="k_gh" type="password" autocomplete="off">
@@ -236,6 +236,7 @@ async function pickModels(n){
   return [...new Set(out)];
 }
 let big=false,lastCut=false,lastPartial=false;
+const cool={},noReason=new Set();
 const orderFor=sz=>{const e=Object.entries(P);if(!big)return e;const g=e.sort((a,b)=>(b[0]==='gemini')-(a[0]==='gemini'));return sz>20000?g.filter(([n])=>!['groq','openrouter'].includes(n)):g};
 async function llm(messages,max=3000,opt={}){
   const errs=[],RETRY=[429,500,502,503,504],size=messages.reduce((a,m)=>a+m.content.length,0);
@@ -243,12 +244,16 @@ async function llm(messages,max=3000,opt={}){
     if(!isOn(n,p))continue;
     const base=baseOf(n);
     if(!/^https:\/\//.test(base)){errs.push(n+': la dirección debe empezar por https://');continue}
-    const q=[n==='custom'?S.cu_model:(S['m_'+n]||S['auto_'+n]||p.m)],tried=new Set();let disc=false;let gone=false;
+    const q=[n==='custom'?S.cu_model:(S['m_'+n]||S['auto_'+n]||p.m)],tried=new Set();let disc=false,gone=false;
+    const cooled=m=>(cool[n+'/'+m]||0)>Date.now(),first=q[0];
+    if(cooled(first)&&!S['m_'+n]&&n!=='openrouter'&&n!=='custom'){
+      disc=true;try{const alt=(await pickModels(n)).filter(m=>!cooled(m));if(alt.length){q.length=0;q.push(...alt,first);log(`${n}: "${first}" saturado hace poco; pruebo con "${alt[0]}"`)}}catch{}
+    }
     while(q.length&&tried.size<4){
       const model=q.shift();if(tried.has(model))continue;tried.add(model);
       for(let r=0;r<2;r++){
         try{
-          const res=await fetch(base+'/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',...(S[p.k]?{Authorization:'Bearer '+S[p.k]}:{})},body:JSON.stringify({model,messages,temperature:.2,max_tokens:n==='gemini'?Math.max(max,8000):max}),signal:AbortSignal.timeout(opt.fast?30000:size>20000?120000:60000)});
+          const res=await fetch(base+'/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',...(S[p.k]?{Authorization:'Bearer '+S[p.k]}:{})},body:JSON.stringify({model,messages,temperature:.2,max_tokens:n==='gemini'?Math.max(max,8000):max,...(opt.edit&&n==='groq'&&/gpt-oss/.test(model)&&!noReason.has(model)?{reasoning_effort:'low'}:{})}),signal:AbortSignal.timeout(opt.fast?30000:size>20000?120000:60000)});
           const d=await res.json().catch(()=>({}));
           if(!res.ok){const e=new Error('HTTP '+res.status+' '+String((Array.isArray(d)?d[0]:d)?.error?.message||'').slice(0,120));e.st=res.status;throw e}
           const x=(d.choices?.[0]?.message?.content||'').replace(/<think>[\s\S]*?<\/think>/g,'').trim();
@@ -259,6 +264,8 @@ async function llm(messages,max=3000,opt={}){
         }catch(e){
           if(r===0&&(RETRY.includes(e.st)||(!e.st&&e.name==='TypeError'))){log(`${n}: ${e.st||'fallo de red'}, reintento en 6 s`);await sleep(6000);continue}
           if(e.st===404||e.st===400)gone=true;
+          if(e.st===400&&/reasoning/i.test(e.message)&&!noReason.has(model)){noReason.add(model);tried.delete(model);q.unshift(model);log(`${n}/${model}: no admite razonamiento bajo; reintento sin ese ajuste`);break}
+          if(RETRY.includes(e.st)||/Timeout|Abort/.test(e.name))cool[n+'/'+model]=Date.now()+600000;
           log(`${n}/${model}: falló (${/Timeout|Abort/.test(e.name)?'tiempo agotado':e.message.slice(0,80)})`);
           errs.push(`${n}/${model}: ${e.message}${e.st?'':' (red o CORS: quizá el proveedor no permite llamadas desde el navegador)'}`);
           if(!S['m_'+n]&&n!=='openrouter'&&n!=='custom'&&!disc&&[400,404,413,429,500,502,503,504].includes(e.st)){
@@ -422,7 +429,7 @@ async function run(){
   for(let n=1;n<=5;n++){
     if(cancel){status='cancelled';break}
     log(`Intento ${n}/5: consultando a la IA`);
-    const t=await llm(msgs,3000);msgs.push({role:'assistant',content:t.slice(0,12000)});
+    const t=await llm(msgs,3000,{edit:true});msgs.push({role:'assistant',content:t.slice(0,12000)});
     let p;const changes=[];
     try{
       p=parseFiles(t);
